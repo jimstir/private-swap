@@ -1,0 +1,60 @@
+{
+  "name": "private-swap",
+  "version": "1.0.0",
+  "description": "Litecoin Atomic Swap Implementation with Litecoin Core RPC",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "start": "node src/index.js",
+    "lint": "eslint '**/*.js' --ignore-pattern node_modules/",
+    "prettier": "prettier --write '**/*.js'",
+    "coverage": "hardhat coverage"
+  },
+  "dependencies": {
+    "@ethersproject/providers": "^5.7.2",
+    "axios": "^1.6.2",
+    "bignumber.js": "^9.1.2",
+    "bitcoinjs-lib": "^6.1.0",
+    "bitcoinjs-message": "^2.2.0",
+    "crypto-js": "^4.1.1",
+    "dotenv": "^16.3.1",
+    "ethers": "^5.7.2",
+    "litecore-lib": "^0.19.8",
+    "web3": "^1.10.0",
+    "winston": "^3.10.0"
+  },
+  "devDependencies": {
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "@openzeppelin/contracts": "^4.9.5",
+    "chai": "^4.3.10",
+    "eslint": "^8.50.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "ethereum-waffle": "^4.0.10",
+    "ethers": "^5.7.2",
+    "hardhat": "^2.17.1",
+    "hardhat-deploy": "^0.11.34",
+    "hardhat-deploy-ethers": "^0.3.0-beta.13",
+    "mocha": "^10.2.0",
+    "prettier": "^3.0.3",
+    "sinon": "^15.2.0",
+    "solidity-coverage": "^0.8.5"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "litecoin",
+    "atomic-swap",
+    "htlc",
+    "cryptocurrency",
+    "blockchain"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/private-swap.git"
+  }
+}
