@@ -1,6 +1,6 @@
-# 1Inch PrivateSwap: Cross-Chain Atomic Swaps with 1inch Fusion
+# 1Inch Privacy Enhanced Swap
 
-A decentralized protocol for trustless cross-chain atomic swaps between Ethereum and Litecoin, powered by 1inch Fusion for optimal pricing and MEV protection. Resolvers are able to fill orders without adversaries knowing their token balance.
+A 1Inch Fusion+ swap between Ethereum network and Litecoin network with privacy enhancing for the resolver. Resolvers are able to fill orders without adversaries knowing their token balance.
 
 ## Features
 
@@ -24,7 +24,7 @@ A decentralized protocol for trustless cross-chain atomic swaps between Ethereum
 
 ### For End Users
 - MetaMask or Web3 wallet
-- LTC wallet (for Litecoin transactions)
+- LTC wallet
 
 ## Quick Start
 
