@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
+const { ethers } = require('ethers');
 const AtomicSwap = require('./swap');
 const config = require('./config');
 const logger = require('./logger');
@@ -8,37 +9,147 @@ const logger = require('./logger');
 // Initialize the program
 const program = new Command();
 program
-  .name('lswap')
-  .description('CLI for Litecoin Atomic Swaps')
+  .name('private-swap')
+  .description('Cross-chain atomic swap between Litecoin and Ethereum')
   .version('1.0.0');
 
 // Initialize the AtomicSwap instance
 let swap;
 
-try {
-  // Validate configuration
-  config.validate();
-  
-  // Initialize AtomicSwap with config
-  swap = new AtomicSwap({
-    rpc: config.rpc,
-    network: config.network,
-    minAmount: config.swap.minAmount,
-    maxAmount: config.swap.maxAmount,
-    feeRate: config.swap.defaultFeeRate
-  });
-  
-  logger.info(`Atomic Swap CLI initialized on ${config.network} network`);
-} catch (error) {
-  logger.error('Failed to initialize:', error.message);
-  process.exit(1);
+// Initialize Ethereum provider with MetaMask
+async function initEthereum() {
+  try {
+    // Check if MetaMask is installed
+    if (typeof window.ethereum === 'undefined') {
+      throw new Error('MetaMask is not installed');
+    }
+
+    // Request account access if needed
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const provider = new ethers.providers.Web3Provider(window.ethereum);
+    
+    // Get the signer (connected account)
+    const signer = provider.getSigner();
+    const address = await signer.getAddress();
+    
+    // Get network details
+    const network = await provider.getNetwork();
+    
+    // Check if we're on Sepolia
+    if (network.chainId !== 11155111) { // Sepolia chain ID
+      try {
+        // Try to switch to Sepolia
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0xaa36a7' }], // Sepolia chain ID in hex
+        });
+      } catch (switchError) {
+        // This error code indicates that the chain has not been added to MetaMask
+        if (switchError.code === 4902) {
+          try {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: '0xaa36a7',
+                chainName: 'Sepolia Test Network',
+                nativeCurrency: {
+                  name: 'Sepolia ETH',
+                  symbol: 'ETH',
+                  decimals: 18
+                },
+                rpcUrls: ['https://sepolia.infura.io/v3/'],
+                blockExplorerUrls: ['https://sepolia.etherscan.io']
+              }],
+            });
+          } catch (addError) {
+            throw new Error('Failed to add Sepolia network to MetaMask');
+          }
+        } else {
+          throw new Error('Failed to switch to Sepolia network');
+        }
+      }
+    }
+    
+    logger.info(`Connected to Ethereum ${network.name} network`);
+    logger.info(`Connected account: ${address}`);
+    
+    return {
+      provider,
+      signer,
+      network: network.name,
+      chainId: network.chainId,
+      address
+    };
+  } catch (error) {
+    logger.error('Failed to initialize Ethereum with MetaMask:', error);
+    process.exit(1);
+  }
 }
 
-// Create command
-program.command('create <amount> <recipient>')
-  .description('Create a new atomic swap')
-  .option('-e, --expiry <hours>', 'Expiry time in hours', '24')
-  .action(async (amount, recipient, options) => {
+// Initialize Litecoin connection
+function initLitecoin() {
+  try {
+    const ltcConfig = config.networks.litecoin;
+    
+    logger.info(`Connected to Litecoin ${ltcConfig.network} network`);
+    logger.info(`RPC URL: ${ltcConfig.rpc.protocol}://${ltcConfig.rpc.host}:${ltcConfig.rpc.port}`);
+    
+    return {
+      network: ltcConfig.network,
+      rpc: ltcConfig.rpc
+    };
+  } catch (error) {
+    logger.error('Failed to initialize Litecoin:', error);
+    process.exit(1);
+  }
+}
+
+// Main initialization
+async function initialize() {
+  try {
+    // Validate configuration
+    config.validate();
+    
+    // Initialize connections
+    const eth = await initEthereum();
+    const ltc = initLitecoin();
+    
+    // Initialize AtomicSwap with config
+    swap = new AtomicSwap({
+      ethereum: {
+        provider: eth.provider,
+        signer: eth.signer,
+        network: eth.network,
+        chainId: eth.chainId,
+        address: eth.address
+      },
+      litecoin: ltc,
+      minAmount: config.swap.minAmount,
+      maxAmount: config.swap.maxAmount,
+      defaultExpiry: config.swap.defaultExpiry
+    });
+    
+    logger.info(`Atomic Swap initialized with MetaMask`);
+    logger.info(`Ethereum address: ${eth.address}`);
+    logger.info(`Litecoin network: ${ltc.network}`);
+    
+    return swap;
+  } catch (error) {
+    logger.error('Initialization failed:', error);
+    process.exit(1);
+  }
+}
+
+// Initialize the application
+initialize().then(() => {
+  logger.info('Application initialized successfully');
+  
+  // Create command
+  program.command('create <amount> <recipient>')
+    .description('Create a new atomic swap')
+    .option('-e, --expiry <hours>', 'Expiry time in hours', '24')
+    .option('-t, --type <type>', 'Swap type: eth-to-ltc or ltc-to-eth', 'eth-to-ltc')
+    .action(async (amount, recipient, options) => {
     try {
       logger.info(`Initiating swap of ${amount} LTC to ${recipient}`);
       
@@ -147,9 +258,14 @@ program.command('status <swapId>')
     }
   });
 
-// Parse command line arguments
-program.parseAsync(process.argv).catch(error => {
-  logger.error('Command failed:', error);
+  // Start the CLI
+  program.parseAsync(process.argv).catch(error => {
+    logger.error('Command failed:', error);
+    console.error('Error:', error.message);
+    process.exit(1);
+  });
+}).catch(error => {
+  logger.error('Failed to initialize application:', error);
   console.error('Error:', error.message);
   process.exit(1);
 });
@@ -164,6 +280,5 @@ process.on('uncaughtException', (error) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  console.error('Unhandled Rejection:', reason);
   process.exit(1);
 });

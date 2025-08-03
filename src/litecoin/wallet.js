@@ -1,59 +1,76 @@
-const litecore = require('litecore-lib');
-const Mnemonic = require('litecore-mnemonic');
+const bitcoin = require('bitcoinjs-lib');
+const bip39 = require('bip39');
 
 class LitecoinWallet {
   constructor(network = 'testnet') {
-    this.network = network === 'testnet' ? litecore.Networks.testnet : litecore.Networks.livenet;
+    this.bitcoinNetwork = network === 'testnet' ? {
+      messagePrefix: '\x19Litecoin Signed Message:\n',
+      bech32: 'tltc',
+      bip32: { public: 0x043587cf, private: 0x04358394 },
+      pubKeyHash: 0x6f,
+      scriptHash: 0x3a,
+      wif: 0xef,
+    } : bitcoin.networks.bitcoin;
     this.networkName = network;
   }
 
   // Generate a new wallet with mnemonic
-  generateWallet() {
-    const mnemonic = new Mnemonic();
-    const hdPrivateKey = mnemonic.toHDPrivateKey('', this.network);
-    
+  async generateWallet() {
+    const mnemonic = bip39.generateMnemonic();
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    const node = bitcoin.bip32.fromSeed(seed, this.bitcoinNetwork);
+    const child = node.derivePath("m/44'/2'/0'/0/0"); // Litecoin BIP44 path
+    const { address } = bitcoin.payments.p2pkh({ pubkey: child.publicKey, network: this.bitcoinNetwork });
     return {
-      mnemonic: mnemonic.toString(),
-      privateKey: hdPrivateKey.privateKey.toString(),
-      address: hdPrivateKey.privateKey.toAddress(this.network).toString()
+      mnemonic,
+      privateKey: child.toWIF(),
+      address
     };
   }
 
   // Import wallet from mnemonic
-  fromMnemonic(mnemonic) {
-    if (!Mnemonic.isValid(mnemonic)) {
+  async fromMnemonic(mnemonic) {
+    if (!bip39.validateMnemonic(mnemonic)) {
       throw new Error('Invalid mnemonic phrase');
     }
     
-    const hdPrivateKey = new Mnemonic(mnemonic).toHDPrivateKey('', this.network);
-    
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    const node = bitcoin.bip32.fromSeed(seed, this.bitcoinNetwork);
+    const child = node.derivePath("m/44'/2'/0'/0/0");
+    const { address } = bitcoin.payments.p2pkh({ pubkey: child.publicKey, network: this.bitcoinNetwork });
     return {
-      mnemonic: mnemonic,
-      privateKey: hdPrivateKey.privateKey.toString(),
-      address: hdPrivateKey.privateKey.toAddress(this.network).toString()
+      mnemonic,
+      privateKey: child.toWIF(),
+      address
     };
   }
 
-  // Sign a transaction
-  signTransaction(tx, privateKey) {
-    const privateKeyObj = new litecore.PrivateKey(privateKey);
-    const transaction = new litecore.Transaction(tx);
-    
-    // Sign all inputs
-    transaction.sign(privateKeyObj);
-    
-    return transaction.serialize();
+  // Sign a transaction (simplified, assumes all inputs are P2PKH and uses bitcoinjs-lib)
+  signTransaction(unsignedTxHex, privateKeyWIF) {
+    const tx = bitcoin.Transaction.fromHex(unsignedTxHex);
+    const txb = bitcoin.TransactionBuilder.fromTransaction(tx, this.bitcoinNetwork);
+    const keyPair = bitcoin.ECPair.fromWIF(privateKeyWIF, this.bitcoinNetwork);
+    for (let i = 0; i < tx.ins.length; i++) {
+      txb.sign(i, keyPair);
+    }
+    return txb.build().toHex();
   }
 
-  // Create a funding transaction for HTLC
-  createFundingTransaction(utxos, amount, htlcAddress, fee = 10000) {
-    const tx = new litecore.Transaction()
-      .from(utxos)
-      .to(htlcAddress, amount)
-      .fee(fee)
-      .change(this.fromMnemonic(utxos[0].address).address);
-      
-    return tx.uncheckedSerialize();
+  // Create a funding transaction for HTLC (simplified, assumes all UTXOs are P2PKH)
+  createFundingTransaction(utxos, amount, htlcAddress, fee = 10000, changeAddress) {
+    const txb = new bitcoin.TransactionBuilder(this.bitcoinNetwork);
+    let totalIn = 0;
+    utxos.forEach(utxo => {
+      txb.addInput(utxo.txid, utxo.vout);
+      totalIn += utxo.amount;
+    });
+    txb.addOutput(htlcAddress, amount);
+    const change = totalIn - amount - fee;
+    if (change > 0) {
+      txb.addOutput(changeAddress, change);
+    }
+    // Note: Signing must be done separately with private keys for each UTXO
+    return txb.buildIncomplete().toHex();
   }
 }
 

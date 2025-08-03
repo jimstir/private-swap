@@ -5,7 +5,7 @@
 
 2. User creates a 1inch Fusion order (off-chain):
    - Specifies amount of ETH to sell and LTC to receive.
-   - Includes `h` (e.g. via Fusion metadata or off-chain agreement).
+   - Includes `h` in order
    - Sets deadline, resolver fee, and other parameters.
 
 3. User submits the signed order to a 1inch Fusion relayer.
