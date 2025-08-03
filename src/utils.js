@@ -1,11 +1,40 @@
 const crypto = require('crypto');
 
 // Helper function to validate addresses
+const bitcoin = require('bitcoinjs-lib');
+const bech32 = require('bech32');
+
 function validateAddress(address, network = 'testnet') {
   try {
-    const litecore = require('litecore-lib');
-    const net = network === 'testnet' ? litecore.Networks.testnet : litecore.Networks.livenet;
-    return litecore.Address.isValid(address, net);
+    // Litecoin testnet network params
+    const ltcTestnet = {
+      messagePrefix: '\x19Litecoin Signed Message:\n',
+      bech32: 'tltc',
+      bip32: { public: 0x043587cf, private: 0x04358394 },
+      pubKeyHash: 0x6f,
+      scriptHash: 0x3a,
+      wif: 0xef,
+    };
+    // Check bech32 (native segwit)
+    if (address.startsWith('tltc1')) {
+      try {
+        const decoded = bech32.decode(address);
+        return decoded.prefix === 'tltc';
+      } catch (e) {
+        return false;
+      }
+    }
+    // Check base58 (P2PKH/P2SH)
+    const payload = bitcoin.address.fromBase58Check(address);
+    if (network === 'testnet') {
+      return (
+        payload.version === ltcTestnet.pubKeyHash ||
+        payload.version === ltcTestnet.scriptHash
+      );
+    }
+    // For mainnet (not used here):
+    // ... add mainnet params if needed
+    return false;
   } catch (error) {
     return false;
   }

@@ -9,20 +9,43 @@ if (!fs.existsSync(logDir)) {
 }
 
 module.exports = {
-  // Litecoin Core RPC Configuration
+  // RPC Configuration (legacy, will be removed in future versions)
   rpc: {
-    username: process.env.LITECOIN_RPC_USER || '',
-    password: process.env.LITECOIN_RPC_PASSWORD || '',
+    username: process.env.LITECOIN_RPC_USER || 'user',
+    password: process.env.LITECOIN_RPC_PASSWORD || 'pass',
     host: process.env.LITECOIN_RPC_HOST || '127.0.0.1',
     port: parseInt(process.env.LITECOIN_RPC_PORT || '19332'),
     wallet: process.env.LITECOIN_WALLET || 'swap_wallet',
     protocol: process.env.LITECOIN_RPC_PROTOCOL || 'http'
   },
+  network: 'testnet', // Legacy, use networks.litecoin.network instead
   
   // Network configuration
-  network: process.env.NETWORK || 'testnet',
+  networks: {
+    litecoin: {
+      network: process.env.LITECOIN_NETWORK || 'testnet',
+      rpc: {
+        username: process.env.LITECOIN_RPC_USER || 'user',
+        password: process.env.LITECOIN_RPC_PASSWORD || 'pass',
+        host: process.env.LITECOIN_RPC_HOST || '127.0.0.1',
+        port: parseInt(process.env.LITECOIN_RPC_PORT || '19332'),
+        wallet: process.env.LITECOIN_WALLET || 'swap_wallet',
+        protocol: process.env.LITECOIN_RPC_PROTOCOL || 'http'
+      }
+    },
+    ethereum: {
+      network: process.env.ETHEREUM_NETWORK || 'sepolia',
+      rpc: {
+        url: process.env.ETHEREUM_RPC_URL || 'https://sepolia.infura.io/v3/YOUR-PROJECT-ID',
+        chainId: parseInt(process.env.ETHEREUM_CHAIN_ID || '11155111') // Sepolia chain ID
+      },
+      contracts: {
+        // Will be populated during deployment
+      }
+    }
+  },
   
-  // Swap configuration
+  // Swap configuration (user input)
   swap: {
     minAmount: parseFloat(process.env.MIN_SWAP_AMOUNT || '0.00001'),
     maxAmount: parseFloat(process.env.MAX_SWAP_AMOUNT || '1000'),
@@ -39,12 +62,18 @@ module.exports = {
   
   // Validate configuration
   validate: function() {
-    if (!this.rpc.username || !this.rpc.password) {
+    // Validate Litecoin RPC connection
+    if (!this.networks.litecoin.rpc.username || !this.networks.litecoin.rpc.password) {
       throw new Error('Litecoin Core RPC credentials are required');
     }
     
-    if (this.network !== 'testnet' && this.network !== 'mainnet') {
-      throw new Error('Network must be either testnet or mainnet');
+    // Validate network types
+    if (this.networks.litecoin.network !== 'testnet' && this.networks.litecoin.network !== 'mainnet') {
+      throw new Error('Litecoin network must be either testnet or mainnet');
+    }
+    
+    if (this.networks.ethereum.network !== 'sepolia' && this.networks.ethereum.network !== 'mainnet') {
+      throw new Error('Ethereum network must be either sepolia or mainnet');
     }
     
     if (this.swap.minAmount <= 0 || this.swap.maxAmount <= 0) {

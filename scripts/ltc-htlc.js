@@ -2,29 +2,37 @@ const bitcoin = require('bitcoinjs-lib');
 const bitcoinMessage = require('bitcoinjs-message');
 const { sha256 } = require('bitcoinjs-lib/src/crypto');
 
-// Litecoin network parameters
-const litecoinNetworks = {
-  testnet: {
-    messagePrefix: '\x19Litecoin Signed Message:\n',
-    bip32: { 
-      public: 0x0436f6e1,
-      private: 0x0436ef7d 
-    },
-    pubKeyHash: 0x6f,  // 'm' or 'n' addresses
-    scriptHash: 0xc4,  // 'Q' addresses
-    wif: 0xef
+// Litecoin testnet network parameters
+const litecoinTestnet = {
+  messagePrefix: '\x19Litecoin Signed Message:\n',
+  bip32: { 
+    public: 0x0436f6e1,
+    private: 0x0436ef7d 
   },
-  mainnet: {
-    messagePrefix: '\x19Litecoin Signed Message:\n',
-    bip32: { 
-      public: 0x019da462,
-      private: 0x019d9cfe 
-    },
-    pubKeyHash: 0x30,  // 'L' addresses
-    scriptHash: 0x32,  // 'M' addresses
-    wif: 0xb0
-  }
+  pubKeyHash: 0x6f,  // 'm' or 'n' addresses
+  scriptHash: 0xc4,  // 'Q' addresses
+  wif: 0xef,
+  bech32: 'tltc',
+  name: 'testnet'
 };
+
+/**
+ * Verify that the connected Litecoin node is on testnet
+ * @param {Object} ltcClient - Litecoin RPC client instance
+ * @returns {Promise<boolean>} - True if connected to testnet, throws error otherwise
+ * @throws {Error} If not connected to testnet or can't verify network
+ */
+async function verifyTestnet(ltcClient) {
+  try {
+    const networkInfo = await ltcClient.getNetworkInfo();
+    if (!networkInfo || networkInfo.network !== 'testnet') {
+      throw new Error('Litecoin node is not connected to testnet');
+    }
+    return true;
+  } catch (error) {
+    throw new Error(`Failed to verify testnet connection: ${error.message}`);
+  }
+}
 
 class LtcHtlc {
   /**
@@ -89,24 +97,18 @@ class LtcHtlc {
   /**
    * Generate P2SH address from redeem script
    * @param {string} redeemScript - Hex-encoded redeem script
-   * @param {string} network - Network type ('testnet' or 'mainnet')
-   * @returns {string} - P2SH address
+   * @returns {string} - P2SH address for testnet
    */
-  static getHtlcAddress(redeemScript, network = 'testnet') {
+  static getHtlcAddress(redeemScript) {
     const scriptBuffer = Buffer.from(redeemScript, 'hex');
     const scriptHash = bitcoin.crypto.hash160(scriptBuffer);
     const scriptPubKey = bitcoin.script.scriptHash.output.encode(scriptHash);
-    
-    const litecoinNetwork = litecoinNetworks[network] || litecoinNetworks.testnet;
-    
-    return bitcoin.address.fromOutputScript(
-      scriptPubKey,
-      litecoinNetwork
-    );
+    return bitcoin.address.fromOutputScript(scriptPubKey, litecoinTestnet);
   }
 
   /**
-   * Create claim transaction
+   * Create claim transaction for testnet
+   * @param {Object} ltcClient - Litecoin RPC client instance
    * @param {string} redeemScript - Hex-encoded redeem script
    * @param {string} txid - Funding transaction ID
    * @param {number} vout - Output index in the funding transaction
@@ -114,12 +116,13 @@ class LtcHtlc {
    * @param {string} privateKey - Recipient's private key (WIF)
    * @param {string} secret - Secret to unlock the HTLC
    * @param {number} amount - Amount in litoshis
-   * @param {string} network - Network type ('testnet' or 'mainnet')
-   * @returns {Object} - Raw transaction and transaction ID
+   * @returns {Promise<Object>} - Raw transaction and transaction ID
    */
-  static createClaimTransaction(redeemScript, txid, vout, recipientAddress, privateKey, secret, amount, network = 'testnet') {
-    const litecoinNetwork = litecoinNetworks[network] || litecoinNetworks.testnet;
-    const txb = new bitcoin.TransactionBuilder(litecoinNetwork);
+  static async createClaimTransaction(ltcClient, redeemScript, txid, vout, recipientAddress, privateKey, secret, amount) {
+    // Verify we're on testnet before proceeding
+    await verifyTestnet(ltcClient);
+    
+    const txb = new bitcoin.TransactionBuilder(litecoinTestnet);
     const txHash = Buffer.from(txid, 'hex').reverse();
     
     // Add input (the HTLC output)
@@ -133,7 +136,7 @@ class LtcHtlc {
     txb.addOutput(recipientAddress, amountAfterFee);
     
     // Sign the transaction
-    const keyPair = bitcoin.ECPair.fromWIF(privateKey, litecoinNetwork);
+    const keyPair = bitcoin.ECPair.fromWIF(privateKey, litecoinTestnet);
     const redeemScriptObj = Buffer.from(redeemScript, 'hex');
     
     // First signature (for the IF branch - claim with secret)
@@ -152,7 +155,8 @@ class LtcHtlc {
   }
 
   /**
-   * Create refund transaction
+   * Create refund transaction for testnet
+   * @param {Object} ltcClient - Litecoin RPC client instance
    * @param {string} redeemScript - Hex-encoded redeem script
    * @param {string} txid - Funding transaction ID
    * @param {number} vout - Output index in the funding transaction
@@ -160,12 +164,13 @@ class LtcHtlc {
    * @param {string} privateKey - Sender's private key (WIF)
    * @param {number} amount - Amount in litoshis
    * @param {number} locktime - Locktime for the refund
-   * @param {string} network - Network type ('testnet' or 'mainnet')
-   * @returns {Object} - Raw transaction and transaction ID
+   * @returns {Promise<Object>} - Raw transaction and transaction ID
    */
-  static createRefundTransaction(redeemScript, txid, vout, refundAddress, privateKey, amount, locktime, network = 'testnet') {
-    const litecoinNetwork = litecoinNetworks[network] || litecoinNetworks.testnet;
-    const txb = new bitcoin.TransactionBuilder(litecoinNetwork);
+  static async createRefundTransaction(ltcClient, redeemScript, txid, vout, refundAddress, privateKey, amount, locktime) {
+    // Verify we're on testnet before proceeding
+    await verifyTestnet(ltcClient);
+    
+    const txb = new bitcoin.TransactionBuilder(litecoinTestnet);
     const txHash = Buffer.from(txid, 'hex').reverse();
     
     // Add input (the HTLC output) with sequence number for relative timelock
@@ -185,7 +190,7 @@ class LtcHtlc {
     txb.addOutput(refundAddress, amountAfterFee);
     
     // Sign the transaction
-    const keyPair = bitcoin.ECPair.fromWIF(privateKey, litecoinNetwork);
+    const keyPair = bitcoin.ECPair.fromWIF(privateKey, litecoinTestnet);
     const redeemScriptObj = Buffer.from(redeemScript, 'hex');
     
     // Sign for the ELSE branch (refund path)

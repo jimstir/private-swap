@@ -10,6 +10,10 @@ A 1Inch Fusion+ swap between Ethereum network and Litecoin network with privacy 
 - **Auto-Relayer Service**: Automated order matching and settlement
 - **Worker Wallets**: Decentralized order fulfillment network
 
+## Documentation
+
+For detailed setup and usage instructions, please see the [Setup Guide](./docs/SETUP.md).
+
 ## Prerequisites
 
 ### For Development

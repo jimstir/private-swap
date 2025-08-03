@@ -1,7 +1,10 @@
 const LitecoinHTLC = require('./litecoin/htlc');
 const LitecoinWallet = require('./litecoin/wallet');
+const OrderService = require('./services/orderService');
+const { generateSecretAndHash, verifySecret } = require('./utils/cryptoUtils');
 const crypto = require('crypto');
-const axios = require('axios');
+const { ethers } = require('ethers');
+const relayer = require('../relayer/inMemoryRelayer');
 
 // Default configuration
 const DEFAULT_CONFIG = {
@@ -16,17 +19,66 @@ const DEFAULT_CONFIG = {
   network: 'testnet',
   minAmount: 0.00001, // Minimum swap amount in LTC
   maxAmount: 1000,    // Maximum swap amount in LTC
-  feeRate: 0.00002    // Fee rate in LTC/kB
+  feeRate: 0.00002,   // Fee rate in LTC/kB
+  defaultExpiry: 3600 // 1 hour default expiry
 };
 
 class AtomicSwap {
   constructor(config = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.network = this.config.network;
+    
+    // Initialize services
     this.litecoinHTLC = new LitecoinHTLC(this.network);
     this.litecoinWallet = new LitecoinWallet(this.network);
+    this.orderService = new OrderService({
+      defaultExpiry: this.config.defaultExpiry
+    });
+    
+    // Initialize wallet connections
+    if (config.ethereum) {
+      this.ethereumWallet = config.ethereum;
+    } else if (config.ethereumPrivateKey) {
+      this.ethereumWallet = new ethers.Wallet(config.ethereumPrivateKey);
+    }
+    
+    // Initialize storage
     this.swaps = new Map(); // Store active swaps
+    this.orders = new Map(); // Store order details
+    
+    // Set up RPC URL
     this.rpcUrl = `${this.config.rpc.protocol}://${this.config.rpc.host}:${this.config.rpc.port}/wallet/${this.config.rpc.wallet}`;
+
+    // Set up order status tracking
+    this.setupOrderTracking();
+  }
+
+  // Set up order status tracking
+  setupOrderTracking() {
+    // Listen for order updates from the relayer
+    relayer.onOrderUpdate((orderId, order) => {
+      if (this.orders.has(orderId)) {
+        const existingOrder = this.orders.get(orderId);
+        this.orders.set(orderId, {
+          ...existingOrder,
+          ...order,
+          updatedAt: new Date().toISOString()
+        });
+        
+        // Emit event if needed
+        if (this.emit) {
+          this.emit('orderUpdate', this.orders.get(orderId));
+        }
+      }
+    });
+  }
+
+  // Get order status
+  async getOrderStatus(orderId) {
+    if (this.orders.has(orderId)) {
+      return this.orders.get(orderId);
+    }
+    return null;
   }
 
   // Make RPC call to Litecoin Core
@@ -82,120 +134,215 @@ class AtomicSwap {
     return true;
   }
 
-  // Initialize a new swap (Initiator side)
-  async initiateSwap(amount, recipientAddress, expiry = 24) {
-    try {
-      // Validate recipient address
-      const addressInfo = await this.rpcCall('getaddressinfo', [recipientAddress]);
-      if (!addressInfo || !addressInfo.ismine) {
-        throw new Error('Recipient address is not in this wallet');
-      }
-      
-      // Validate amount and check balance
-      const amountSatoshis = this.validateAmount(amount);
-      await this.checkBalance(amount);
-      
-      // Generate a new address for the refund
-      const refundAddress = await this.rpcCall('getnewaddress', ['swap_refund', 'bech32']);
-      
-      // Generate secret and hash
-      const { secret, hash } = this.litecoinHTLC.generateSecret();
-      
-      // Calculate locktime (current time + expiry hours in seconds)
-      const locktime = Math.floor(Date.now() / 1000) + (expiry * 3600);
-      
-      // Create HTLC contract
-      const script = this.litecoinHTLC.createHTLCScript(
-        recipientAddress,
-        refundAddress,
-        hash,
-        locktime
-      );
-      
-      // Get the P2SH address for the HTLC
-      const htlcAddress = this.litecoinHTLC.getHTLCAddress(script);
-      
-      // Generate a new address to receive the HTLC
-      const htlcReceiveAddress = await this.rpcCall('getnewaddress', ['htlc_receive', 'bech32']);
-      
-      // Store swap details
-      const swapId = crypto.randomBytes(16).toString('hex');
-      this.swaps.set(swapId, {
-        id: swapId,
-        status: 'pending',
-        secret: secret,
-        hash: hash,
-        htlcAddress: htlcAddress,
-        script: script.toString('hex'),
-        amount: amountSatoshis,
-        amountLTC: amount,
-        expiry: locktime,
-        recipient: recipientAddress,
-        refundAddress: refundAddress,
-        createdAt: Math.floor(Date.now() / 1000)
-      });
-      
-      // Create the funding transaction
-      const rawTx = await this.rpcCall('createrawtransaction', [
-        [], // No inputs (let Litecoin Core choose)
-        [
-          {
-            [htlcAddress]: amount,
-            [htlcReceiveAddress]: 0.00001 // Dust amount to detect funding
-          }
-        ],
-        0, // Locktime
-        true // Replaceable
-      ]);
-      
-      // Fund the transaction (selects UTXOs and adds change output)
-      const fundedTx = await this.rpcCall('fundrawtransaction', [
-        rawTx,
-        {
-          feeRate: this.config.feeRate,
-          changeAddress: refundAddress,
-          includeWatching: true
-        }
-      ]);
-      
-      // Sign the transaction
-      const signedTx = await this.rpcCall('signrawtransactionwithwallet', [
-        fundedTx.hex
-      ]);
-      
-      if (!signedTx.complete) {
-        throw new Error('Failed to sign transaction');
-      }
-      
-      // Store the funding transaction ID
-      const txid = await this.rpcCall('sendrawtransaction', [signedTx.hex]);
-      
-      // Update swap with transaction details
-      const swap = this.swaps.get(swapId);
-      swap.fundingTxId = txid;
-      swap.status = 'funded';
-      this.swaps.set(swapId, swap);
-      
-      return {
-        status: 'pending',
-        swapId: swapId,
-        htlcAddress: htlcAddress,
-        hash: hash,
-        script: script.toString('hex'),
-        amount: amount,
-        fundingTxId: txid,
-        expiry: locktime,
-        recipient: recipientAddress,
-        refundAddress: refundAddress
-      };
-      
-    } catch (error) {
-      console.error('Error initiating swap:', error);
-      throw new Error(`Failed to initiate swap: ${error.message}`);
+  /**
+   * Initiate a new ETH to LTC swap
+   * @param {Object} params - Swap parameters
+   * @param {string|number} params.ethAmount - Amount of ETH to swap
+   * @param {string|number} params.ltcAmount - Expected amount of LTC to receive (in LTC)
+   * @param {string} params.ltcRecipient - LTC recipient address
+   * @param {string} [params.ltcRefundAddress] - Optional LTC refund address
+   * @param {number} [params.expiry] - Optional expiry time in seconds from now
+   * @returns {Promise<Object>} Swap details including order and HTLC information
+   */
+  async initiateEthToLtcSwap(params) {
+    const {
+      ethAmount,
+      ltcAmount,
+      ltcRecipient,
+      ltcRefundAddress,
+      expiry = this.config.defaultExpiry
+    } = params;
+
+    // Validate parameters
+    if (!this.ethereumWallet) {
+      throw new Error('Ethereum wallet not configured');
     }
+    if (!ethAmount || !ltcAmount || !ltcRecipient) {
+      throw new Error('Missing required parameters');
+    }
+
+    // Generate secret and hash
+    const { secret, hash } = this.litecoinHTLC.generateSecret();
+    
+    // Create local order
+    const order = {
+      type: 'eth_to_ltc',
+      makerAddress: this.ethereumWallet.address,
+      ethAmount: ethAmount.toString(),
+      ltcAmount: ltcAmount.toString(),
+      secretHash: hash,
+      ltcRefundAddress: ltcRefundAddress || this.litecoinWallet.address,
+      targetLtcAddress: ltcRecipient,
+      expiry: Math.floor(Date.now() / 1000) + expiry,
+      status: 'pending'
+    };
+
+    // Submit order to relayer
+    const result = await relayer.submitOrder(order);
+    
+    // Store order locally
+    this.orders.set(result.orderId, {
+      ...order,
+      id: result.orderId,
+      secret,
+      hash,
+      status: 'pending'
+    });
+
+    // Create HTLC script and address
+    const htlcExpiry = Math.floor(Date.now() / 1000) + expiry;
+    const script = this.litecoinHTLC.createHTLCScript(
+      ltcRecipient,
+      ltcRefundAddress || this.litecoinWallet.address,
+      hash,
+      htlcExpiry
+    );
+    
+    const htlcAddress = this.litecoinHTLC.getHTLCAddress(script);
+    
+    // Store swap details
+    const swapId = crypto.randomBytes(16).toString('hex');
+    this.swaps.set(swapId, {
+      type: 'initiator',
+      direction: 'eth-to-ltc',
+      status: 'pending',
+      order,
+      amount: ethAmount,
+      htlcAddress,
+      script,
+      hash,
+      secret,
+      expiry: htlcExpiry,
+      recipient: ltcRecipient,
+      createdAt: Date.now()
+    });
+
+    // Store order reference
+    this.orders.set(order.orderHash || order.metadata.secretHash, {
+      swapId,
+      type: 'eth-to-ltc',
+      status: 'pending',
+      order,
+      createdAt: Date.now()
+    });
+    
+    return { 
+      swapId, 
+      order,
+      htlcAddress, 
+      hash,
+      secret // Note: In production, the secret should be stored securely
+    };
   }
 
-  // Participate in a swap (Participant side)
+  /**
+   * Initiate a new LTC to ETH swap
+   * @param {Object} params - Swap parameters
+   * @param {string|number} params.ltcAmount - Amount of LTC to swap (in LTC)
+   * @param {string|number} params.ethAmount - Expected amount of ETH to receive
+   * @param {string} params.ethRecipient - ETH recipient address
+   * @param {string} [params.ltcRefundAddress] - Optional LTC refund address
+   * @param {number} [params.expiry] - Optional expiry time in seconds from now
+   * @returns {Promise<Object>} Swap details including order and HTLC information
+   */
+  async initiateLtcToEthSwap(params) {
+    const {
+      ltcAmount,
+      ethAmount,
+      ethRecipient,
+      ltcRefundAddress,
+      expiry = this.config.defaultExpiry
+    } = params;
+
+    // Validate parameters
+    if (!this.ethereumWallet) {
+      throw new Error('Ethereum wallet not configured');
+    }
+    if (!ltcAmount || !ethAmount || !ethRecipient) {
+      throw new Error('Missing required parameters');
+    }
+
+    // Generate secret and hash
+    const { secret, hash } = generateSecretAndHash();
+    
+    // Create order
+    const order = {
+      type: 'ltc_to_eth',
+      makerAddress: this.litecoinWallet.address,
+      ltcAmount: ltcAmount.toString(),
+      ethAmount: ethAmount.toString(),
+      secretHash: hash,
+      ltcRefundAddress: ltcRefundAddress || this.litecoinWallet.address,
+      targetEthAddress: ethRecipient,
+      expiry: Math.floor(Date.now() / 1000) + expiry,
+      status: 'pending'
+    };
+
+    // Submit order to relayer
+    const result = await relayer.submitOrder(order);
+    
+    // Store order locally
+    this.orders.set(result.orderId, {
+      ...order,
+      id: result.orderId,
+      secret,
+      hash,
+      status: 'pending'
+    });
+
+    // Create HTLC script and address
+    const htlcExpiry = Math.floor(Date.now() / 1000) + expiry;
+    const script = this.litecoinHTLC.createHTLCScript(
+      this.litecoinWallet.address, // Will be updated by the relayer
+      ltcRefundAddress || this.litecoinWallet.address,
+      hash,
+      htlcExpiry
+    );
+    
+    const htlcAddress = this.litecoinHTLC.getHTLCAddress(script);
+    
+    // Store swap details
+    const swapId = crypto.randomBytes(16).toString('hex');
+    this.swaps.set(swapId, {
+      type: 'initiator',
+      direction: 'ltc-to-eth',
+      status: 'pending',
+      order,
+      amount: ltcAmount,
+      htlcAddress,
+      script,
+      hash,
+      secret,
+      expiry: htlcExpiry,
+      recipient: ethRecipient,
+      createdAt: Date.now()
+    });
+
+    // Store order reference
+    this.orders.set(order.orderHash || order.metadata.secretHash, {
+      swapId,
+      type: 'ltc-to-eth',
+      status: 'pending',
+      order,
+      createdAt: Date.now()
+    });
+    
+    return { 
+      swapId, 
+      order,
+      htlcAddress, 
+      hash,
+      secret // Note: In production, the secret should be stored securely
+    };
+  }
+
+  /**
+   * Participate in a swap (Participant side)
+   * @param {Object} initiatorDetails - Details from the initiator
+   * @param {string|number} amount - Amount to participate with
+   * @param {string} recipientAddress - Address to receive funds
+   * @returns {Promise<Object>} Participation details
+   */
   async participate(initiatorDetails, amount, recipientAddress) {
     const { hash, expiry, htlcAddress } = initiatorDetails;
     

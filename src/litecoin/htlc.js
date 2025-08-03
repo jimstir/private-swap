@@ -1,13 +1,18 @@
 const bitcoin = require('bitcoinjs-lib');
-const litecore = require('litecore-lib');
 const crypto = require('crypto');
 
 class LitecoinHTLC {
   constructor(network = 'testnet') {
-    this.network = network === 'testnet' ? litecore.Networks.testnet : litecore.Networks.livenet;
-    this.bitcoinNetwork = network === 'testnet' ? 
-      bitcoin.networks.testnet : 
-      bitcoin.networks.bitcoin;
+    // Use bitcoinjs-lib's network params for Litecoin testnet
+    this.bitcoinNetwork = network === 'testnet' ? {
+      messagePrefix: '\x19Litecoin Signed Message:\n',
+      bech32: 'tltc',
+      bip32: { public: 0x043587cf, private: 0x04358394 },
+      pubKeyHash: 0x6f,
+      scriptHash: 0x3a,
+      wif: 0xef,
+    } : bitcoin.networks.bitcoin;
+    this.networkName = network;
   }
 
   // Generate a random secret and its hash
@@ -18,43 +23,39 @@ class LitecoinHTLC {
   }
 
   // Create HTLC contract
-  createHTLCScript(recipientAddress, refundAddress, hash, expiry) {
-    const script = new litecore.Script();
-    
-    // OP_IF
-    //   OP_HASH160 <hash> OP_EQUALVERIFY
-    //   OP_DUP OP_HASH160 <recipient pubkey hash> OP_EQUAL
-    // OP_ELSE
-    //   <expiry> OP_CHECKLOCKTIMEVERIFY OP_DROP
-    //   OP_DUP OP_HASH160 <refund pubkey hash> OP_EQUAL
-    // OP_ENDIF
-    // OP_CHECKSIG
-    
-    return script
-      .add(bitcoin.opcodes.OP_IF)
-      .add(Buffer.from(hash, 'hex'))
-      .add(bitcoin.opcodes.OP_EQUALVERIFY)
-      .add(bitcoin.opcodes.OP_DUP)
-      .add(bitcoin.opcodes.OP_HASH160)
-      .add(litecore.Address.fromString(recipientAddress).hashBuffer)
-      .add(bitcoin.opcodes.OP_EQUALVERIFY)
-      .add(bitcoin.opcodes.OP_ELSE)
-      .add(litecore.Script.buildNumber(expiry).toBuffer())
-      .add(bitcoin.opcodes.OP_CHECKLOCKTIMEVERIFY)
-      .add(bitcoin.opcodes.OP_DROP)
-      .add(bitcoin.opcodes.OP_DUP)
-      .add(bitcoin.opcodes.OP_HASH160)
-      .add(litecore.Address.fromString(refundAddress).hashBuffer)
-      .add(bitcoin.opcodes.OP_EQUAL)
-      .add(bitcoin.opcodes.OP_ENDIF)
-      .add(bitcoin.opcodes.OP_CHECKSIG);
+  createHTLCScript(recipientPubKeyHash, refundPubKeyHash, hash, expiry) {
+    // All hashes must be buffers
+    // recipientPubKeyHash, refundPubKeyHash: Buffer (20 bytes)
+    // hash: Buffer (20 bytes for HASH160, 32 bytes for SHA256)
+    // expiry: integer (block height or timestamp)
+    const script = bitcoin.script.compile([
+      bitcoin.opcodes.OP_IF,
+        bitcoin.opcodes.OP_SHA256,
+        Buffer.from(hash, 'hex'),
+        bitcoin.opcodes.OP_EQUALVERIFY,
+        bitcoin.opcodes.OP_DUP,
+        bitcoin.opcodes.OP_HASH160,
+        Buffer.from(recipientPubKeyHash, 'hex'),
+        bitcoin.opcodes.OP_EQUAL,
+      bitcoin.opcodes.OP_ELSE,
+        bitcoin.script.number.encode(expiry),
+        bitcoin.opcodes.OP_CHECKLOCKTIMEVERIFY,
+        bitcoin.opcodes.OP_DROP,
+        bitcoin.opcodes.OP_DUP,
+        bitcoin.opcodes.OP_HASH160,
+        Buffer.from(refundPubKeyHash, 'hex'),
+        bitcoin.opcodes.OP_EQUAL,
+      bitcoin.opcodes.OP_ENDIF,
+      bitcoin.opcodes.OP_CHECKSIG
+    ]);
+    return script;
   }
 
   // Generate HTLC address from script
   getHTLCAddress(script) {
-    const scriptHash = litecore.crypto.Hash.sha256(script.toBuffer());
-    const scriptPubKey = litecore.Script.buildScriptHashOut(scriptHash);
-    return scriptPubKey.toAddress(this.network).toString();
+    // Use P2SH for script hash
+    const p2sh = bitcoin.payments.p2sh({ redeem: { output: script, network: this.bitcoinNetwork }, network: this.bitcoinNetwork });
+    return p2sh.address;
   }
 }
 
